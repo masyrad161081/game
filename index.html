@@ -1,0 +1,720 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Escape Confirmation</title>
+  <style>
+    /*
+      Escape Confirmation — single-file browser game
+
+      Testing notes:
+      - Move the mouse slowly vs quickly: the button predicts and evades further if you move fast.
+      - Push the cursor into edges/corners: the button should slide along and never get stuck.
+      - Stop moving for a few seconds: the button wanders but avoids idling; if it slows too much it bursts away.
+      - Try to click: only counts if the cursor is actually over the button on mousedown/click.
+      - Toggle debug: shows predicted cursor point and steering vectors to verify non-linear, smooth behavior.
+    */
+
+    :root {
+      --bg-1: #0f172a;   /* slate-900 */
+      --bg-2: #111827;   /* gray-900  */
+      --fg:   #e5e7eb;   /* gray-200  */
+      --muted:#9ca3af;   /* gray-400  */
+      --accent:#22d3ee;  /* cyan-400  */
+      --accent-2:#a78bfa;/* violet-400*/
+      --danger:#f43f5e;  /* rose-500  */
+      --ok:#34d399;      /* emerald-400 */
+      --btn: #111827;
+      --btn-fg: #e5e7eb;
+      --shadow: 0 10px 25px rgba(0,0,0,0.35);
+    }
+
+    html, body {
+      height: 100%;
+      margin: 0;
+      padding: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+      color: var(--fg);
+      background: radial-gradient(1200px 800px at 10% 10%, #0b1223, var(--bg-1)),
+                  radial-gradient(1200px 800px at 90% 80%, #0b1020, var(--bg-2));
+      overflow: hidden; /* keep the game in-viewport */
+    }
+
+    .hud {
+      position: fixed;
+      top: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 20;
+      display: flex;
+      gap: 14px;
+      align-items: center;
+      padding: 10px 14px;
+      border-radius: 12px;
+      background: rgba(17, 24, 39, 0.6);
+      backdrop-filter: blur(8px);
+      box-shadow: var(--shadow);
+      user-select: none;
+    }
+
+    .hud .stat {
+      display: flex;
+      gap: 6px;
+      align-items: baseline;
+      font-size: 14px;
+      color: var(--muted);
+    }
+
+    .hud .stat b {
+      color: var(--fg);
+      font-size: 16px;
+      letter-spacing: 0.25px;
+    }
+
+    .hud .dot {
+      display: inline-block;
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: var(--accent);
+      margin: 0 4px;
+      box-shadow: 0 0 10px var(--accent);
+    }
+
+    .hud .debug-toggle {
+      margin-left: 8px;
+      display: inline-flex; align-items: center;
+      gap: 6px; font-size: 13px; color: var(--muted);
+      cursor: pointer;
+    }
+
+    .playfield {
+      position: relative;
+      width: 100vw; height: 100vh;
+    }
+
+    #confirmBtn {
+      position: absolute;
+      min-width: 128px;
+      padding: 12px 18px;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,0.06);
+      color: var(--btn-fg);
+      background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02));
+      backdrop-filter: blur(2px);
+      box-shadow: var(--shadow);
+      font-weight: 600;
+      letter-spacing: 0.2px;
+      transition: box-shadow 180ms ease;
+      will-change: transform;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    #confirmBtn:hover { box-shadow: 0 12px 30px rgba(0,0,0,0.5); }
+
+    /* Debug canvas overlays the playfield without intercepting pointer */
+    #debugCanvas {
+      position: absolute; inset: 0; z-index: 10; pointer-events: none;
+    }
+
+    /* Win overlay */
+    .overlay {
+      position: fixed; inset: 0; display: none; z-index: 30;
+      align-items: center; justify-content: center;
+      background: rgba(0,0,0,0.5);
+      backdrop-filter: blur(2px);
+    }
+    .overlay .box {
+      background: rgba(17,24,39,0.85);
+      padding: 24px 28px; border-radius: 14px;
+      box-shadow: var(--shadow);
+      text-align: center;
+    }
+    .overlay .box h2 { margin: 0 0 6px; font-size: 22px; }
+    .overlay .box p { margin: 0; color: var(--muted); font-size: 14px; }
+    .overlay .box .again {
+      margin-top: 14px;
+      padding: 10px 14px; border-radius: 10px;
+      border: 1px solid rgba(255,255,255,0.08);
+      color: var(--fg);
+      background: rgba(255,255,255,0.06);
+      cursor: pointer;
+    }
+
+    /* Subtle grid for reference (disabled by default) */
+    .grid::before {
+      content: ""; position: absolute; inset: 0; pointer-events: none;
+      background-image: radial-gradient(circle at 1px 1px, rgba(255,255,255,0.06) 1px, transparent 0);
+      background-size: 32px 32px; opacity: 0.15; display: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="hud" role="status" aria-live="polite">
+    <span class="stat"><span class="dot"></span><span>Score</span><b id="score">0.0</b></span>
+    <span class="stat"><span class="dot" style="background: var(--ok);"></span><span>Time</span><b id="time">0.0s</b></span>
+    <span class="stat"><span class="dot" style="background: var(--accent-2);"></span><span>Level</span><b id="level">1.00</b></span>
+    <label class="debug-toggle"><input id="debugToggle" type="checkbox" /> Debug</label>
+  </div>
+
+  <div id="playfield" class="playfield" aria-label="Game area">
+    <canvas id="debugCanvas"></canvas>
+    <button id="confirmBtn" type="button" aria-label="Confirm (try to click)">Confirm</button>
+  </div>
+
+  <div id="overlay" class="overlay" role="dialog" aria-modal="true">
+    <div class="box">
+      <h2>Nice aim!</h2>
+      <p>You clicked Confirm. Press to play again.</p>
+      <button class="again" id="againBtn">Play Again</button>
+    </div>
+  </div>
+
+  <script>
+  "use strict";
+  // ==========================
+  // Escape Confirmation (AI button)
+  // ==========================
+  // Heavily commented for clarity. All game logic is in this single file.
+
+  // --------------------------
+  // Tuning parameters (easy to tweak)
+  // --------------------------
+  const TUNING = {
+    // Initial max speed (px/s) and cap (scales with difficulty)
+    maxSpeedBase: 260,
+    maxSpeedCap: 620,
+
+    // Acceleration limits (px/s^2)
+    maxAccel: 1600,
+
+    // Predictive evasion horizon (ms); will scale up with time
+    predictionMsBase: 240,
+    predictionMsCap: 420,
+
+    // Force weights (relative, unit: px/s^2 when multiplied by normalized vectors)
+    weights: {
+      evade: 1.6,
+      wander: 0.22,
+      avoidWalls: 1.15,
+      separation: 0.35,
+      cornerRepel: 1.8,
+    },
+
+    // Wander parameters (smooth random steering)
+    wanderPeriod: 0.85,     // seconds between target jitter updates
+    wanderSmoothing: 0.15,  // low-pass filter factor per second (0..1)
+    wanderStrengthBase: 140, // strength scales slightly down with difficulty
+
+    // Wall and corner avoidance
+    wallRepelRadius: 140,
+    wallRepelMax: 1600,
+    cornerRepelRadius: 180,
+
+    // Separation from recent path (to avoid repeating same track)
+    trailPointEveryMs: 60,
+    trailMaxPoints: 80,
+    separationRadius: 100,
+    separationMax: 900,
+
+    // Anti-stuck and escape burst
+    minSpeedForHealthy: 36,       // px/s below which we consider slowing too much
+    stuckMs: 320,                 // if under speed for this long => burst
+    idleFailSafeMs: 500,          // hard max idle time window
+    escapeBurstAccel: 2200,       // strong acceleration shot
+
+    // Difficulty scaling
+    // difficultyProgress in [0, 1] over difficultyRampSeconds
+    difficultyRampSeconds: 70,
+
+    // UI / fairness
+    buttonPadding: 10,   // for within-bounds checks
+  };
+
+  // --------------------------
+  // DOM & canvas setup
+  // --------------------------
+  const playfield = document.getElementById('playfield');
+  const btn = document.getElementById('confirmBtn');
+  const overlay = document.getElementById('overlay');
+  const againBtn = document.getElementById('againBtn');
+  const debugToggle = document.getElementById('debugToggle');
+  const scoreEl = document.getElementById('score');
+  const timeEl = document.getElementById('time');
+  const levelEl = document.getElementById('level');
+  const debugCanvas = document.getElementById('debugCanvas');
+  const ctx = debugCanvas.getContext('2d');
+
+  // Guard DOM
+  if (!playfield || !btn || !overlay || !againBtn || !debugCanvas || !ctx) {
+    throw new Error('Missing essential DOM elements.');
+  }
+
+  // Maintain canvas size to match playfield
+  function resize() {
+    debugCanvas.width = playfield.clientWidth;
+    debugCanvas.height = playfield.clientHeight;
+  }
+  addEventListener('resize', resize);
+  resize();
+
+  // --------------------------
+  // Vector helpers
+  // --------------------------
+  function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+  function len(x, y) { return Math.hypot(x, y); }
+  function normalize(x, y) {
+    const l = Math.hypot(x, y) || 1; return [x / l, y / l];
+  }
+  function scale(x, y, s) { return [x * s, y * s]; }
+  function add(x1, y1, x2, y2) { return [x1 + x2, y1 + y2]; }
+  function sub(x1, y1, x2, y2) { return [x1 - x2, y1 - y2]; }
+  function dot(x1, y1, x2, y2) { return x1 * x2 + y1 * y2; }
+  function lerp(a, b, t) { return a + (b - a) * t; }
+  function smoothStep(t) { return t * t * (3 - 2 * t); }
+
+  // --------------------------
+  // Pointer tracking with sliding window velocity
+  // --------------------------
+  const pointer = {
+    x: playfield.clientWidth / 2,
+    y: playfield.clientHeight / 2,
+    history: [], // {x, y, t}
+    vx: 0,
+    vy: 0,
+  };
+
+  function recordPointer(x, y, t) {
+    // Clamp into playfield bounds (simulate cursor inside field)
+    x = clamp(x, 0, playfield.clientWidth);
+    y = clamp(y, 0, playfield.clientHeight);
+    pointer.x = x; pointer.y = y;
+    pointer.history.push({ x, y, t });
+    if (pointer.history.length > 8) pointer.history.shift();
+
+    // Compute velocity from oldest-newest over time delta
+    if (pointer.history.length >= 2) {
+      const a = pointer.history[0];
+      const b = pointer.history[pointer.history.length - 1];
+      const dt = Math.max(1, b.t - a.t) / 1000; // seconds, avoid NaN/0
+      pointer.vx = (b.x - a.x) / dt;
+      pointer.vy = (b.y - a.y) / dt;
+    }
+  }
+
+  // Pointer/touch events
+  function screenToLocal(clientX, clientY) {
+    const r = playfield.getBoundingClientRect();
+    return { x: clientX - r.left, y: clientY - r.top };
+  }
+
+  addEventListener('pointermove', (e) => {
+    const { x, y } = screenToLocal(e.clientX, e.clientY);
+    recordPointer(x, y, performance.now());
+  }, { passive: true });
+
+  addEventListener('mousemove', (e) => {
+    const { x, y } = screenToLocal(e.clientX, e.clientY);
+    recordPointer(x, y, performance.now());
+  }, { passive: true });
+
+  addEventListener('touchmove', (e) => {
+    if (e.touches && e.touches[0]) {
+      const { x, y } = screenToLocal(e.touches[0].clientX, e.touches[0].clientY);
+      recordPointer(x, y, performance.now());
+    }
+  }, { passive: true });
+
+  // Initialize pointer to center
+  recordPointer(playfield.clientWidth / 2, playfield.clientHeight / 2, performance.now());
+
+  // --------------------------
+  // Agent (button) physics state
+  // --------------------------
+  const agent = {
+    x: playfield.clientWidth * 0.7,
+    y: playfield.clientHeight * 0.6,
+    vx: 0,
+    vy: 0,
+    ax: 0,
+    ay: 0,
+    lastHealthySpeedAt: performance.now(),
+    lastTrailAt: 0,
+    trail: [], // recent positions for separation
+    nearMisses: 0,
+    difficultyBump: 0, // increments a bit when near-misses happen
+  };
+
+  // Place the button initially
+  function applyButtonPosition() {
+    const rect = btn.getBoundingClientRect();
+    const w = rect.width; const h = rect.height;
+    // Keep top-left anchor at (agent.x, agent.y) minus half size (center anchor)
+    const left = clamp(agent.x - w / 2, 0, playfield.clientWidth - w);
+    const top = clamp(agent.y - h / 2, 0, playfield.clientHeight - h);
+    btn.style.transform = `translate(${left}px, ${top}px)`;
+  }
+
+  // --------------------------
+  // Difficulty scaling
+  // --------------------------
+  const game = {
+    startedAt: performance.now(),
+    running: true,
+    lastFrame: performance.now(),
+    score: 0,
+    best: undefined,
+  };
+  try {
+    const stored = localStorage.getItem('escape-confirmation-best');
+    if (stored != null) game.best = Math.max(0, Number(stored)) || undefined;
+  } catch (_) {}
+
+  function difficultyProgress(now) {
+    const base = clamp((now - game.startedAt) / 1000 / TUNING.difficultyRampSeconds, 0, 1);
+    // Add small bumps per near-miss to make it heat up after confrontations
+    const bump = clamp(agent.difficultyBump, 0, 0.3);
+    return clamp(base + bump, 0, 1);
+  }
+
+  function currentParams(now) {
+    const p = difficultyProgress(now);
+    const maxSpeed = lerp(TUNING.maxSpeedBase, TUNING.maxSpeedCap, smoothStep(p));
+    const predictionMs = lerp(TUNING.predictionMsBase, TUNING.predictionMsCap, p);
+    const wanderStrength = lerp(TUNING.wanderStrengthBase, TUNING.wanderStrengthBase * 0.75, p);
+    return { p, maxSpeed, predictionMs, wanderStrength };
+  }
+
+  // --------------------------
+  // Steering behaviors
+  // --------------------------
+  const debugVectors = { evade:[0,0], wander:[0,0], walls:[0,0], sep:[0,0], corner:[0,0], accel:[0,0], predicted:[0,0] };
+
+  function predictPointer(now, predictionMs) {
+    // Linear extrapolation of pointer using recent velocity
+    const dt = predictionMs / 1000;
+    let px = pointer.x + pointer.vx * dt;
+    let py = pointer.y + pointer.vy * dt;
+    // Clamp within playfield
+    px = clamp(px, 0, playfield.clientWidth);
+    py = clamp(py, 0, playfield.clientHeight);
+    return [px, py];
+  }
+
+  let wanderTarget = [Math.random()*2-1, Math.random()*2-1];
+  function wanderForce(dt, strength, now) {
+    // Every wanderPeriod seconds, retarget the wander vector slightly
+    // Then low-pass filter toward it for smoothness (perlin-like drift)
+    wanderForce._accum = (wanderForce._accum || 0) + dt;
+    if (wanderForce._accum >= TUNING.wanderPeriod) {
+      wanderForce._accum = 0;
+      // Jitter the target direction a bit
+      const jitter = 0.6;
+      const nx = wanderTarget[0] + (Math.random()*2-1) * jitter;
+      const ny = wanderTarget[1] + (Math.random()*2-1) * jitter;
+      const nrm = normalize(nx, ny);
+      wanderTarget = [nrm[0], nrm[1]];
+    }
+    // Smooth toward target
+    const alpha = clamp(TUNING.wanderSmoothing * dt * 60, 0, 1); // frame-rate independent smoothing
+    const dir = [
+      lerp(wanderForce._dir?.[0] ?? 0, wanderTarget[0], alpha),
+      lerp(wanderForce._dir?.[1] ?? 0, wanderTarget[1], alpha),
+    ];
+    const nrm = normalize(dir[0], dir[1]);
+    wanderForce._dir = nrm;
+    return scale(nrm[0], nrm[1], strength);
+  }
+
+  function evadeForce(ax, ay, px, py, maxStrength) {
+    const toAgentX = agent.x - px;
+    const toAgentY = agent.y - py;
+    const d = Math.max(1, len(toAgentX, toAgentY));
+    const dir = normalize(toAgentX, toAgentY);
+    // Fear multiplier increases when cursor gets close
+    const fear = clamp(1 - d / 320, 0, 1);
+    const strength = maxStrength * (1 + 2.2 * fear);
+    return scale(dir[0], dir[1], strength);
+  }
+
+  function avoidWallsForce() {
+    const r = TUNING.wallRepelRadius;
+    const w = playfield.clientWidth;
+    const h = playfield.clientHeight;
+    let fx = 0, fy = 0;
+
+    // Left wall
+    const dl = clamp(agent.x, 0, r);
+    if (dl < r) fx += (1 - dl / r) * TUNING.wallRepelMax;
+
+    // Right wall
+    const dr = clamp(w - agent.x, 0, r);
+    if (dr < r) fx -= (1 - dr / r) * TUNING.wallRepelMax;
+
+    // Top wall
+    const dtp = clamp(agent.y, 0, r);
+    if (dtp < r) fy += (1 - dtp / r) * TUNING.wallRepelMax;
+
+    // Bottom wall
+    const db = clamp(h - agent.y, 0, r);
+    if (db < r) fy -= (1 - db / r) * TUNING.wallRepelMax;
+
+    return [fx, fy];
+  }
+
+  function cornerRepelForce() {
+    const w = playfield.clientWidth;
+    const h = playfield.clientHeight;
+    const rad = TUNING.cornerRepelRadius;
+    let fx = 0, fy = 0;
+
+    // Repel from four corners with strong inverse-square-like force
+    const corners = [ [0,0], [w,0], [0,h], [w,h] ];
+    for (const [cx, cy] of corners) {
+      const dx = agent.x - cx;
+      const dy = agent.y - cy;
+      const d = Math.hypot(dx, dy) || 1;
+      if (d < rad) {
+        const dir = normalize(dx, dy);
+        const m = (1 - d / rad);
+        const strength = TUNING.wallRepelMax * 1.3 * m * m; // sharper as closer
+        fx += dir[0] * strength;
+        fy += dir[1] * strength;
+      }
+    }
+    return [fx, fy];
+  }
+
+  function separationForce() {
+    // Repel from recent trail points to avoid repeating same track
+    const rad = TUNING.separationRadius;
+    const max = TUNING.separationMax;
+    let fx = 0, fy = 0;
+    const consider = Math.min(24, agent.trail.length);
+    for (let i = 1; i <= consider; i++) {
+      const p = agent.trail[agent.trail.length - i];
+      const dx = agent.x - p.x;
+      const dy = agent.y - p.y;
+      const d = Math.hypot(dx, dy) || 1;
+      if (d < rad) {
+        const dir = normalize(dx, dy);
+        const m = (1 - d / rad);
+        const strength = max * m * 0.75;
+        fx += dir[0] * strength;
+        fy += dir[1] * strength;
+      }
+    }
+    return [fx, fy];
+  }
+
+  function integrate(dt, params) {
+    // Predict pointer position and compute steering forces
+    const [ppx, ppy] = predictPointer(performance.now(), params.predictionMs);
+    debugVectors.predicted = [ppx, ppy];
+
+    // Individual forces
+    const evade = evadeForce(agent.x, agent.y, ppx, ppy, TUNING.weights.evade * TUNING.maxAccel);
+    const wander = wanderForce(dt, TUNING.weights.wander * params.wanderStrength, performance.now());
+    const walls = avoidWallsForce();
+    const corner = cornerRepelForce();
+    const sep = separationForce();
+
+    // Weighted sum
+    let ax = 0, ay = 0;
+    ax += evade[0] + wander[0] + walls[0] * TUNING.weights.avoidWalls + sep[0] * TUNING.weights.separation + corner[0] * TUNING.weights.cornerRepel;
+    ay += evade[1] + wander[1] + walls[1] * TUNING.weights.avoidWalls + sep[1] * TUNING.weights.separation + corner[1] * TUNING.weights.cornerRepel;
+
+    // Anti-stuck: if speed too low for > stuckMs, add a directed escape burst toward center + random offset
+    const speed = len(agent.vx, agent.vy);
+    const now = performance.now();
+    if (speed > TUNING.minSpeedForHealthy) {
+      agent.lastHealthySpeedAt = now;
+    } else if (now - agent.lastHealthySpeedAt > TUNING.stuckMs) {
+      const cx = playfield.clientWidth / 2;
+      const cy = playfield.clientHeight / 2;
+      const rx = (Math.random() * 2 - 1) * 0.4; // small random to avoid predictability
+      const ry = (Math.random() * 2 - 1) * 0.4;
+      const dir = normalize(cx - agent.x + rx * 200, cy - agent.y + ry * 200);
+      ax += dir[0] * TUNING.escapeBurstAccel;
+      ay += dir[1] * TUNING.escapeBurstAccel;
+      agent.lastHealthySpeedAt = now; // reset timer after burst
+    }
+
+    // Clamp acceleration
+    const aLen = Math.hypot(ax, ay);
+    if (aLen > TUNING.maxAccel) {
+      const n = TUNING.maxAccel / aLen; ax *= n; ay *= n;
+    }
+
+    // Integrate
+    agent.vx += ax * dt; agent.vy += ay * dt;
+
+    // Cap velocity
+    const vLen = Math.hypot(agent.vx, agent.vy);
+    if (vLen > params.maxSpeed) {
+      const n = params.maxSpeed / vLen; agent.vx *= n; agent.vy *= n;
+    }
+
+    agent.x += agent.vx * dt; agent.y += agent.vy * dt;
+
+    // Keep inside bounds (slide along edges instead of stopping)
+    const w = playfield.clientWidth; const h = playfield.clientHeight;
+    const rect = btn.getBoundingClientRect(); const bw = rect.width; const bh = rect.height;
+
+    // If agent hits wall, project inside and dampen perpendicular velocity a bit
+    if (agent.x < bw/2) { agent.x = bw/2; if (agent.vx < 0) agent.vx *= -0.4; }
+    if (agent.x > w - bw/2) { agent.x = w - bw/2; if (agent.vx > 0) agent.vx *= -0.4; }
+    if (agent.y < bh/2) { agent.y = bh/2; if (agent.vy < 0) agent.vy *= -0.4; }
+    if (agent.y > h - bh/2) { agent.y = h - bh/2; if (agent.vy > 0) agent.vy *= -0.4; }
+
+    // Trail for separation
+    if (now - agent.lastTrailAt > TUNING.trailPointEveryMs) {
+      agent.trail.push({ x: agent.x, y: agent.y, t: now });
+      if (agent.trail.length > TUNING.trailMaxPoints) agent.trail.shift();
+      agent.lastTrailAt = now;
+    }
+
+    // Near-miss detection: if pointer comes within 120px, bump difficulty slightly
+    const dToPointer = Math.hypot(agent.x - pointer.x, agent.y - pointer.y);
+    if (dToPointer < 120) {
+      agent.difficultyBump = clamp(agent.difficultyBump + 0.002, 0, 0.3);
+    } else {
+      // decay slowly
+      agent.difficultyBump = clamp(agent.difficultyBump - 0.0008, 0, 0.3);
+    }
+
+    // Expose debug
+    debugVectors.evade = evade; debugVectors.wander = wander; debugVectors.walls = walls; debugVectors.sep = sep; debugVectors.corner = corner; debugVectors.accel = [ax, ay];
+  }
+
+  // --------------------------
+  // Debug drawing
+  // --------------------------
+  function drawDebug() {
+    if (!debugToggle.checked) { ctx.clearRect(0,0,debugCanvas.width, debugCanvas.height); return; }
+    ctx.clearRect(0,0,debugCanvas.width, debugCanvas.height);
+
+    // Predicted pointer point
+    ctx.fillStyle = '#22d3ee';
+    ctx.beginPath();
+    ctx.arc(debugVectors.predicted[0], debugVectors.predicted[1], 5, 0, Math.PI*2);
+    ctx.fill();
+
+    // Draw vectors from agent position
+    const ox = agent.x, oy = agent.y;
+    function drawVec(v, color, scaleLen=0.04) {
+      const x = ox, y = oy; const tx = x + v[0] * scaleLen; const ty = y + v[1] * scaleLen;
+      ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(tx,ty); ctx.stroke();
+      // arrowhead
+      const ang = Math.atan2(ty - y, tx - x);
+      const ah = 8;
+      ctx.beginPath(); ctx.moveTo(tx,ty);
+      ctx.lineTo(tx - Math.cos(ang - 0.4)*ah, ty - Math.sin(ang - 0.4)*ah);
+      ctx.lineTo(tx - Math.cos(ang + 0.4)*ah, ty - Math.sin(ang + 0.4)*ah);
+      ctx.closePath(); ctx.fillStyle = color; ctx.fill();
+    }
+    drawVec(debugVectors.evade, '#f43f5e');
+    drawVec(debugVectors.wander, '#a78bfa');
+    drawVec(debugVectors.walls, '#34d399');
+    drawVec(debugVectors.sep, '#eab308');
+    drawVec(debugVectors.corner, '#fb7185');
+    drawVec(debugVectors.accel, '#60a5fa', 0.06);
+
+    // Pointer actual position (small white dot)
+    ctx.fillStyle = 'white'; ctx.beginPath(); ctx.arc(pointer.x, pointer.y, 3, 0, Math.PI*2); ctx.fill();
+
+    // Trail visualization (faint)
+    ctx.strokeStyle = 'rgba(255,255,255,0.15)'; ctx.lineWidth = 1; ctx.beginPath();
+    for (let i = 0; i < agent.trail.length; i++) {
+      const p = agent.trail[i]; if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
+    }
+    ctx.stroke();
+  }
+
+  // --------------------------
+  // Click detection & fairness
+  // --------------------------
+  function pointerInButton(clientX, clientY) {
+    // Check bounds at the time of event
+    const r = btn.getBoundingClientRect();
+    const x = clientX; const y = clientY;
+    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+  }
+
+  function win() {
+    game.running = false;
+    overlay.style.display = 'flex';
+    try {
+      game.best = game.best == null ? game.score : Math.max(game.best, game.score);
+      localStorage.setItem('escape-confirmation-best', String(game.best));
+    } catch (_) {}
+  }
+
+  function reset() {
+    overlay.style.display = 'none';
+    agent.x = playfield.clientWidth * 0.7;
+    agent.y = playfield.clientHeight * 0.6;
+    agent.vx = 0; agent.vy = 0; agent.ax = 0; agent.ay = 0;
+    agent.trail = []; agent.lastTrailAt = 0; agent.difficultyBump = 0; agent.nearMisses = 0;
+    game.startedAt = performance.now(); game.lastFrame = game.startedAt; game.score = 0; game.running = true;
+    applyButtonPosition();
+  }
+
+  // Only count if pointer is actually over button at event time
+  addEventListener('mousedown', (e) => {
+    if (!game.running) return;
+    if (pointerInButton(e.clientX, e.clientY)) win();
+  });
+  addEventListener('click', (e) => {
+    if (!game.running) return;
+    if (pointerInButton(e.clientX, e.clientY)) win();
+  });
+  addEventListener('touchstart', (e) => {
+    if (!game.running) return;
+    const t = e.touches[0]; if (!t) return;
+    if (pointerInButton(t.clientX, t.clientY)) win();
+  }, { passive: true });
+  againBtn.addEventListener('click', reset);
+
+  // --------------------------
+  // Main loop
+  // --------------------------
+  function frame(now) {
+    const dt = Math.min(0.04, Math.max(0.001, (now - game.lastFrame) / 1000)); // seconds, clamp
+    game.lastFrame = now;
+
+    if (game.running) {
+      const params = currentParams(now);
+      integrate(dt, params);
+      applyButtonPosition();
+
+      // Score: time survived; Level: 1..2 as progress grows (displayed)
+      const elapsed = (now - game.startedAt) / 1000;
+      game.score = elapsed; // seconds as score for simplicity
+      scoreEl.textContent = game.score.toFixed(1);
+      timeEl.textContent = `${elapsed.toFixed(1)}s`;
+      levelEl.textContent = (1 + difficultyProgress(now)).toFixed(2);
+    }
+
+    drawDebug();
+    requestAnimationFrame(frame);
+  }
+
+  // Initial layout
+  applyButtonPosition();
+  requestAnimationFrame((t) => { game.lastFrame = t; requestAnimationFrame(frame); });
+
+  // Accessibility: keyboard focus outline if tabbed
+  let usedKeyboard = false;
+  addEventListener('keydown', (e) => { if (e.key === 'Tab') usedKeyboard = true; if (usedKeyboard) btn.style.outline = '2px solid var(--accent)'; });
+  addEventListener('mousedown', () => { usedKeyboard = false; btn.style.outline = 'none'; });
+
+  // NaN guard safety net (dev/debug)
+  setInterval(() => {
+    if ([agent.x, agent.y, agent.vx, agent.vy].some(Number.isNaN)) {
+      reset();
+    }
+  }, 2000);
+  </script>
+</body>
+</html>
