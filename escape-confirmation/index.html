@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Escape Confirmation</title>
+  <style>
+    :root{
+      --bg:#0f1320;
+      --panel:#171c2b;
+      --accent:#4dd0e1;
+      --accent-2:#00e5ff;
+      --text:#e6edf3;
+      --muted:#9aa7b7;
+      --warn:#ff6b6b;
+      --success:#00e676;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{
+      margin:0;
+      background: radial-gradient(1200px 800px at 80% -10%, #1a2035 0%, var(--bg) 60%) fixed;
+      color:var(--text);
+      font: 16px/1.5 system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
+      overflow:hidden;
+    }
+
+    /* Layout */
+    .hud{
+      position:fixed; inset:16px 16px auto 16px; display:flex; gap:12px; align-items:center; flex-wrap:wrap;
+      background:color-mix(in oklab, var(--panel) 85%, black);
+      border:1px solid color-mix(in oklab, var(--accent) 25%, transparent);
+      padding:10px 12px; border-radius:12px; backdrop-filter: blur(6px);
+      box-shadow: 0 6px 20px rgba(0,0,0,.35);
+    }
+    .hud .tag{padding:.25rem .6rem; border-radius:999px; background:#0e1424; border:1px solid #19213a; color:var(--muted)}
+    .hud .value{color:var(--accent); font-weight:700}
+    .hud .btn{margin-left:auto; background:transparent; color:var(--muted); border:1px solid #2a3555; padding:.45rem .7rem; border-radius:10px; cursor:pointer}
+    .hud .btn:hover{border-color:#3a4b7e; color:#b8c4d6}
+
+    /* Arena */
+    .arena{position:fixed; inset:0;}
+    .arena__inner{position:absolute; inset:0; padding:24px}
+    .board{
+      position:relative; width:100%; height:100%; border-radius:22px; overflow:hidden;
+      background: linear-gradient(160deg,#0d1221,#0a0f1c);
+      border:1px solid #202b47;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.03), inset 0 -10px 40px rgba(0,0,0,.45);
+      cursor: crosshair;
+    }
+
+    /* Confirm Button */
+    .confirm{
+      position:absolute; left:50%; top:50%; translate:-50% -50%;
+      background: linear-gradient(180deg, var(--accent) 0%, var(--accent-2) 100%);
+      color:#0b1020; font-weight:800; font-size:16px; letter-spacing:.4px; text-transform:uppercase;
+      border:none; border-radius:14px; padding:14px 22px; cursor:pointer;
+      box-shadow: 0 10px 24px rgba(0, 229, 255, .25), 0 2px 0 rgba(0,0,0,.35);
+      outline: none;
+      transition: transform .12s ease, box-shadow .2s ease;
+      will-change: transform, left, top;
+      user-select:none; -webkit-user-select:none;
+    }
+    .confirm:hover{transform: translateZ(0) scale(1.05)}
+    .confirm:active{transform: translateZ(0) scale(.98)}
+
+    /* Ghost trail when dodging */
+    .ghost{
+      position:absolute; pointer-events:none; opacity:.28; filter: blur(.6px) saturate(0.8);
+      transform-origin:center; 
+    }
+
+    /* Center text for win / start */
+    .center{position:absolute; inset:auto 0 12% 0; text-align:center;}
+    .title{font-size: clamp(24px, 4vw, 40px); font-weight:800; letter-spacing:.5px; color:#d8e6ff}
+    .subtitle{color:var(--muted)}
+
+    /* Accessibility focus ring */
+    .focus-ring:focus-visible{outline:3px solid #84ffff; outline-offset:3px}
+
+    /* Mobile hint */
+    .hint{position:fixed; right:16px; bottom:16px; opacity:.6; font-size:12px}
+
+    /* Toast notifications */
+    .toast{
+      position:fixed; left:50%; top:18px; transform:translateX(-50%) translateY(-18px);
+      background: linear-gradient(180deg,#1a2542,#0f162c);
+      border:1px solid #2a3555; color:#e6f2ff; padding:.5rem .8rem;
+      border-radius:10px; box-shadow:0 8px 24px rgba(0,0,0,.35);
+      opacity:0; pointer-events:none;
+      transition: opacity .25s ease, transform .25s ease;
+      white-space:nowrap; z-index:10;
+    }
+    .toast.show{ opacity:1; transform:translateX(-50%) translateY(0); }
+    .toast.success{ border-color: color-mix(in oklab, var(--success) 35%, #2a3555); }
+    .toast.warn{ border-color: color-mix(in oklab, var(--warn) 35%, #2a3555); }
+  </style>
+</head>
+<body>
+  <div class="hud" role="region" aria-label="Game heads-up display">
+    <span class="tag">Level <span id="level" class="value">1</span></span>
+    <span class="tag">Escapes <span id="escapes" class="value">0</span></span>
+    <span class="tag">Best <span id="best" class="value">0</span></span>
+    <button id="reset" class="btn focus-ring" aria-label="Reset game">Reset</button>
+  </div>
+
+  <div class="arena" id="arena">
+    <div class="arena__inner">
+      <div class="board" id="board" aria-live="polite" aria-label="Escape Confirmation arena">
+        <button class="confirm focus-ring" id="confirmBtn">Confirm</button>
+        <div class="center" id="centerText">
+          <div class="title">Escape Confirmation</div>
+          <div class="subtitle">Try to click <strong>Confirm</strong>. It will try to escape.</div>
+          <div class="subtitle" style="margin-top:8px">Mouse / touch: chase it. Keyboard: Tab to focus then press Enter/Space.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="hint">Tip: The button learns from your motion.</div>
+  <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
+
+<script>
+(function(){
+  'use strict';
+
+  // DOM refs
+  const board = document.getElementById('board');
+  const confirmBtn = document.getElementById('confirmBtn');
+  const levelEl = document.getElementById('level');
+  const escapesEl = document.getElementById('escapes');
+  const bestEl = document.getElementById('best');
+  const resetBtn = document.getElementById('reset');
+  const centerText = document.getElementById('centerText');
+  const toastEl = document.getElementById('toast');
+
+  // Game state
+  const state = {
+    running: false,
+    level: 1,
+    escapes: 0,
+    best: Number(localStorage.getItem('escape_best')||0),
+    // Button physics
+    pos: {x: 0, y: 0},
+    vel: {x: 0, y: 0},
+    // AI parameters (will scale with level)
+    ai: {
+      dodgeRadius: 140, // how close before dodging is triggered
+      predictionHorizon: 0.20, // seconds ahead to predict cursor
+      maxSpeed: 900, // px/s max flee speed
+      accel: 3200, // px/s^2 acceleration toward target evade point
+      jitter: 30, // random jitter to avoid perfect tracking
+      teleportChance: 0.02, // small chance to teleport when cornered
+    },
+    // Cursor tracking
+    cursor: {
+      x: 0, y: 0,
+      vx: 0, vy: 0,
+      lastX: 0, lastY: 0,
+      lastT: performance.now(),
+    },
+    // Difficulty scaling over time
+    difficultyTimer: 0,
+  };
+  bestEl.textContent = String(state.best);
+
+  // Utility
+  function clamp(v, min, max){ return Math.max(min, Math.min(max, v)); }
+  function length(x,y){ return Math.hypot(x,y); }
+  function normalize(x,y){ const m = Math.hypot(x,y)||1; return {x:x/m, y:y/m}; }
+  function randRange(a,b){ return a + Math.random()*(b-a); }
+
+  function placeButtonCenter(){
+    const r = board.getBoundingClientRect();
+    const btn = confirmBtn.getBoundingClientRect();
+    const x = r.left + r.width/2 - btn.width/2;
+    const y = r.top + r.height/2 - btn.height/2;
+    state.pos.x = x; state.pos.y = y;
+    confirmBtn.style.left = `${x - r.left}px`;
+    confirmBtn.style.top = `${y - r.top}px`;
+  }
+
+  // Small status popups for successes and level-ups
+  let toastTimer = 0;
+  function showToast(message, type=''){
+    if(!toastEl) return;
+    toastEl.textContent = message;
+    toastEl.className = 'toast' + (type ? ' ' + type : '');
+    toastEl.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(()=> toastEl.classList.remove('show'), 1400);
+  }
+
+  // Start/pause helpers
+  function start(){
+    if(state.running) return;
+    centerText.style.display = 'none';
+    state.running = true;
+    state.level = 1; state.escapes = 0; state.difficultyTimer = 0;
+    levelEl.textContent = '1';
+    escapesEl.textContent = '0';
+    setAIForLevel(1);
+    placeButtonCenter();
+    showToast('Go! Level 1');
+  }
+
+  function reset(){
+    state.running = false;
+    centerText.style.display = '';
+    placeButtonCenter();
+  }
+
+  resetBtn.addEventListener('click', () => { start(); });
+  board.addEventListener('pointerdown', () => { if(!state.running) start(); });
+
+  // Cursor tracking with velocity estimation
+  board.addEventListener('pointermove', (e) => {
+    const now = performance.now();
+    const dt = Math.max(0.001, (now - state.cursor.lastT) / 1000);
+    const rect = board.getBoundingClientRect();
+    const x = e.clientX - rect.left; const y = e.clientY - rect.top;
+    state.cursor.vx = (x - state.cursor.lastX) / dt;
+    state.cursor.vy = (y - state.cursor.lastY) / dt;
+    state.cursor.x = x; state.cursor.y = y;
+    state.cursor.lastX = x; state.cursor.lastY = y; state.cursor.lastT = now;
+  }, {passive:true});
+
+  // Touch move fallback to keep pointer capture implicit
+  board.addEventListener('pointerdown', (e)=>{ board.setPointerCapture(e.pointerId); });
+  board.addEventListener('pointerup', (e)=>{ try{ board.releasePointerCapture(e.pointerId); }catch(_){} });
+
+  // Keyboard accessibility: pressing Enter/Space when focused attempts click
+  confirmBtn.addEventListener('keydown', (e)=>{
+    if(e.key === 'Enter' || e.key === ' '){
+      attemptConfirm(e);
+      e.preventDefault();
+    }
+  });
+
+  // Main click handler
+  confirmBtn.addEventListener('click', attemptConfirm);
+
+  function attemptConfirm(e){
+    if(!state.running){ start(); return; }
+    // If the user manages to click before AI dodges, they win this level
+    // Increase level and make AI harder
+    celebrate();
+    const nextLevel = state.level + 1;
+    showToast(`Clicked! Level ${nextLevel}`, 'success');
+    state.level = nextLevel;
+    levelEl.textContent = String(state.level);
+    setAIForLevel(state.level);
+  }
+
+  function celebrate(){
+    const rect = confirmBtn.getBoundingClientRect();
+    const ghost = confirmBtn.cloneNode(true);
+    ghost.classList.add('ghost');
+    ghost.style.left = confirmBtn.style.left; ghost.style.top = confirmBtn.style.top;
+    ghost.style.opacity = '0.9';
+    ghost.style.transition = 'transform .6s cubic-bezier(.2,.8,.2,1), opacity .6s ease';
+    board.appendChild(ghost);
+    requestAnimationFrame(()=>{
+      ghost.style.transform = 'translateY(-30px) scale(1.2)';
+      ghost.style.opacity = '0';
+    });
+    setTimeout(()=> ghost.remove(), 650);
+  }
+
+  // Level scaling logic
+  function setAIForLevel(level){
+    // Scale parameters smoothly. Every few levels, it gets trickier.
+    const scale = 1 + Math.min(2.5, (level-1) * 0.12);
+    state.ai.dodgeRadius = clamp(140 * scale, 120, 360);
+    state.ai.predictionHorizon = clamp(0.18 + (level-1)*0.008, 0.18, 0.42);
+    state.ai.maxSpeed = clamp(900 * scale, 700, 2200);
+    state.ai.accel = clamp(3200 * scale, 2400, 8000);
+    state.ai.jitter = clamp(30 * Math.sqrt(scale), 18, 90);
+    state.ai.teleportChance = clamp(0.02 + (level-1)*0.004, 0.02, 0.085);
+  }
+
+  // AI core: evasive movement with predictive cursor tracking
+  function aiUpdate(dt){
+    const rect = board.getBoundingClientRect();
+    const btnRect = confirmBtn.getBoundingClientRect();
+
+    // Button center in board coordinates
+    const bx = btnRect.left - rect.left + btnRect.width/2;
+    const by = btnRect.top - rect.top + btnRect.height/2;
+
+    // Predict cursor future position
+    const px = state.cursor.x + state.cursor.vx * state.ai.predictionHorizon;
+    const py = state.cursor.y + state.cursor.vy * state.ai.predictionHorizon;
+
+    const dx = bx - px; const dy = by - py; // vector from predicted cursor to button
+    const dist = Math.hypot(dx, dy);
+
+    // If cursor is far, slight drift; if near, flee strongly
+    let targetVx = 0, targetVy = 0;
+
+    if(dist < state.ai.dodgeRadius){
+      // Flee direction
+      const dir = normalize(dx, dy);
+      // Add perpendicular component based on cursor approach, to sidestep rather than straight back
+      const approach = normalize(-state.cursor.vx, -state.cursor.vy);
+      const lateral = { x: -approach.y, y: approach.x };
+      const lateralWeight = clamp((state.ai.dodgeRadius - dist) / state.ai.dodgeRadius, 0.1, 0.9);
+      const flee = {
+        x: dir.x * (1 - lateralWeight) + lateral.x * lateralWeight,
+        y: dir.y * (1 - lateralWeight) + lateral.y * lateralWeight,
+      };
+      const fleeN = normalize(flee.x, flee.y);
+      targetVx = fleeN.x * state.ai.maxSpeed;
+      targetVy = fleeN.y * state.ai.maxSpeed;
+    } else {
+      // Gentle orbiting drift to avoid being stationary/predictable
+      const t = performance.now()/1000;
+      targetVx = Math.cos(t*0.9) * 30 + randRange(-state.ai.jitter, state.ai.jitter);
+      targetVy = Math.sin(t*0.8) * 30 + randRange(-state.ai.jitter, state.ai.jitter);
+    }
+
+    // Accelerate velocity toward target velocity
+    const dvx = targetVx - state.vel.x;
+    const dvy = targetVy - state.vel.y;
+    const dvLen = length(dvx, dvy);
+    const maxDv = state.ai.accel * dt;
+    let ax = 0, ay = 0;
+    if(dvLen > 0){
+      const dvNorm = {x: dvx/dvLen, y: dvy/dvLen};
+      ax = dvNorm.x * maxDv; ay = dvNorm.y * maxDv;
+    }
+    state.vel.x += ax; state.vel.y += ay;
+
+    // Clamp speed
+    const spd = length(state.vel.x, state.vel.y);
+    const maxSpd = state.ai.maxSpeed;
+    if(spd > maxSpd){
+      const n = normalize(state.vel.x, state.vel.y);
+      state.vel.x = n.x * maxSpd; state.vel.y = n.y * maxSpd;
+    }
+
+    // Integrate position
+    let nx = (btnRect.left - rect.left) + state.vel.x * dt;
+    let ny = (btnRect.top - rect.top) + state.vel.y * dt;
+
+    // Keep inside board bounds; if cornered, chance to teleport
+    const margin = 4;
+    const minX = margin, minY = margin;
+    const maxX = rect.width - btnRect.width - margin;
+    const maxY = rect.height - btnRect.height - margin;
+
+    // Detect corner pressure
+    const nearEdge = (nx <= minX+2) || (ny <= minY+2) || (nx >= maxX-2) || (ny >= maxY-2);
+    if(nearEdge && Math.random() < state.ai.teleportChance){
+      // Teleport to furthest corner from predicted cursor
+      const corners = [
+        {x:minX, y:minY},
+        {x:maxX, y:minY},
+        {x:minX, y:maxY},
+        {x:maxX, y:maxY},
+      ];
+      let bestCorner = corners[0];
+      let bestDist = -Infinity;
+      for(const c of corners){
+        const cx = c.x + btnRect.width/2, cy = c.y + btnRect.height/2;
+        const d = Math.hypot(cx - px, cy - py);
+        if(d > bestDist){ bestDist = d; bestCorner = c; }
+      }
+      nx = bestCorner.x; ny = bestCorner.y;
+      state.vel.x *= 0.4; state.vel.y *= 0.4; // dampen after teleport
+      spawnGhost(btnRect.left - rect.left, btnRect.top - rect.top); // visual trail
+    }
+
+    // Collide with walls and slide
+    if(nx < minX){ nx = minX; state.vel.x = Math.abs(state.vel.x)*0.4; }
+    if(ny < minY){ ny = minY; state.vel.y = Math.abs(state.vel.y)*0.4; }
+    if(nx > maxX){ nx = maxX; state.vel.x = -Math.abs(state.vel.x)*0.4; }
+    if(ny > maxY){ ny = maxY; state.vel.y = -Math.abs(state.vel.y)*0.4; }
+
+    // Write position
+    confirmBtn.style.left = `${nx}px`;
+    confirmBtn.style.top = `${ny}px`;
+
+    // Track logical state.pos in absolute coords for future reference
+    state.pos.x = rect.left + nx; state.pos.y = rect.top + ny;
+
+    // If player cursor intersects button area and attempts to click, AI might pre-dodge
+    // Pre-dodge: if the pointer is within a tighter radius and velocity is high towards button
+    const relX = bx - state.cursor.x, relY = by - state.cursor.y;
+    const closingSpeed = (relX * -state.cursor.vx + relY * -state.cursor.vy) / (length(relX, relY) + 1e-5);
+    if(length(relX, relY) < 80 && closingSpeed > 400){
+      // Burst acceleration sideways to evade flick clicks
+      const side = Math.sign((-state.cursor.vy) || 1);
+      state.vel.x += side * 700; state.vel.y += randRange(-120, 120);
+    }
+  }
+
+  function spawnGhost(x, y){
+    const ghost = confirmBtn.cloneNode(true);
+    ghost.classList.add('ghost');
+    ghost.style.left = `${x}px`; ghost.style.top = `${y}px`;
+    ghost.style.transition = 'transform .45s ease, opacity .45s ease';
+    board.appendChild(ghost);
+    requestAnimationFrame(()=>{
+      ghost.style.transform = 'translateY(8px) scale(0.96)';
+      ghost.style.opacity = '0';
+    });
+    setTimeout(()=> ghost.remove(), 500);
+  }
+
+  // Difficulty increases with survival time without a click
+  function updateDifficulty(dt){
+    state.difficultyTimer += dt;
+    if(state.difficultyTimer >= 6){
+      state.difficultyTimer = 0;
+      state.escapes += 1; // survived another interval
+      escapesEl.textContent = String(state.escapes);
+      if(state.escapes > state.best){ state.best = state.escapes; bestEl.textContent = String(state.best); localStorage.setItem('escape_best', String(state.best)); }
+      state.level += 1; levelEl.textContent = String(state.level);
+      setAIForLevel(state.level);
+      // small celebratory ghost when it levels up by escape
+      const rect = confirmBtn.getBoundingClientRect(); const boardRect = board.getBoundingClientRect();
+      spawnGhost(rect.left - boardRect.left, rect.top - boardRect.top);
+      showToast(`AI levels up: Level ${state.level}`, 'warn');
+    }
+  }
+
+  // Animation loop
+  let last = performance.now();
+  function tick(now){
+    const dt = Math.min(0.033, (now - last)/1000);
+    last = now;
+    if(state.running){
+      aiUpdate(dt);
+      updateDifficulty(dt);
+    }
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+
+  // Initial layout
+  window.addEventListener('resize', placeButtonCenter);
+  placeButtonCenter();
+
+  // Prevent text selection while chasing
+  document.addEventListener('dragstart', (e)=> e.preventDefault());
+})();
+</script>
+</body>
+</html>
