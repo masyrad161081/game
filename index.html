@@ -1,0 +1,784 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Escape Confirmation</title>
+  <style>
+    /*
+      Escape Confirmation — Single-file browser game
+
+      Testing notes (how to verify behavior):
+      - Move the mouse slowly toward the Confirm button: it should drift away smoothly.
+      - Move quickly in a curved path: the button should predict and dodge the intercept.
+      - Push it toward edges/corners: it should slide along edges and not get stuck.
+      - Stop moving the cursor for a few seconds: the button should not idle in a corner.
+      - Try to click: a click only counts if the pointer is actually over the button.
+      - Toggle Debug to visualize prediction and steering vectors.
+    */
+
+    :root {
+      color-scheme: light dark;
+      --bg: #0e1116;
+      --bg-2: #151922;
+      --fg: #e9eef9;
+      --fg-dim: #b6c2d9;
+      --accent: #5aa9ff;
+      --accent-2: #36d399;
+      --danger: #ff6b6b;
+      --shadow: rgba(0,0,0,0.25);
+      --card: #1b2230;
+    }
+
+    html, body {
+      height: 100%;
+      margin: 0;
+      padding: 0;
+      background: radial-gradient(1000px 700px at 30% 20%, var(--bg-2), var(--bg));
+      color: var(--fg);
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+      overflow: hidden;
+    }
+
+    #game {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      user-select: none;
+      -webkit-user-select: none;
+      overflow: hidden;
+    }
+
+    /* HUD */
+    .hud {
+      position: absolute;
+      top: 16px;
+      left: 16px;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      background: color-mix(in srgb, var(--card) 88%, transparent);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 12px;
+      padding: 10px 12px;
+      box-shadow: 0 8px 20px var(--shadow);
+      backdrop-filter: blur(6px);
+      z-index: 10;
+      pointer-events: auto;
+    }
+
+    .hud .stat {
+      display: flex;
+      gap: 6px;
+      align-items: baseline;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .hud .label { color: var(--fg-dim); font-size: 12px; }
+    .hud .value { color: var(--fg); font-weight: 600; }
+
+    .hud .divider {
+      width: 1px; height: 20px; background: rgba(255,255,255,0.08);
+      margin: 0 2px;
+    }
+
+    .hud .debug-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--fg-dim);
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .hud button.play-again {
+      appearance: none;
+      border: none;
+      border-radius: 10px;
+      padding: 8px 12px;
+      font-weight: 600;
+      color: #0b1220;
+      background: var(--accent-2);
+      cursor: pointer;
+      box-shadow: 0 6px 18px rgba(54, 211, 153, 0.35), 0 0 1px rgba(0,0,0,0.4) inset;
+      transition: transform 0.08s ease, filter 0.15s ease;
+    }
+    .hud button.play-again:hover { transform: translateY(-1px); filter: brightness(1.02); }
+    .hud button.play-again:active { transform: translateY(0); }
+
+    /* The evasive Confirm button */
+    #confirmBtn {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+
+      appearance: none;
+      border: none;
+      border-radius: 999px;
+      padding: 16px 26px;
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: 0.3px;
+      color: #0b1220;
+      background: linear-gradient(180deg, #6cb6ff, #4a97ff);
+      cursor: pointer;
+      box-shadow: 0 14px 30px rgba(53, 145, 255, 0.35), 0 2px 0 rgba(255,255,255,0.65) inset, 0 0 0 1px rgba(255,255,255,0.25) inset;
+      transition: filter 0.12s ease;
+      z-index: 2;
+    }
+    #confirmBtn:hover { filter: brightness(1.03); }
+
+    /* Debug canvas overlay (hidden by default) */
+    #debugCanvas {
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.12s ease;
+    }
+    #debugCanvas.show { opacity: 1; }
+
+    /* Success banner (shown when caught) */
+    #banner {
+      position: absolute;
+      left: 50%; top: 20%; transform: translateX(-50%);
+      background: color-mix(in srgb, var(--card) 92%, transparent);
+      padding: 12px 16px;
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.06);
+      box-shadow: 0 10px 24px var(--shadow);
+      display: none;
+      z-index: 20;
+      text-align: center;
+    }
+    #banner.show { display: block; }
+    #banner .title { font-weight: 800; margin-bottom: 6px; }
+    #banner .subtitle { color: var(--fg-dim); font-size: 14px; }
+  </style>
+</head>
+<body>
+  <div id="game" aria-label="Escape Confirmation game area">
+    <canvas id="debugCanvas"></canvas>
+
+    <div class="hud" role="status" aria-live="polite">
+      <div class="stat"><span class="label">Time</span><span class="value" id="timeVal">0.0s</span></div>
+      <div class="divider"></div>
+      <div class="stat"><span class="label">Difficulty</span><span class="value" id="diffVal">1.0</span></div>
+      <div class="divider"></div>
+      <div class="stat"><span class="label">Dodges</span><span class="value" id="dodgeVal">0</span></div>
+      <div class="divider"></div>
+      <label class="debug-toggle" title="Show prediction and steering vectors">
+        <input type="checkbox" id="debugToggle" /> Debug
+      </label>
+      <button class="play-again" id="playAgain" style="display:none;">Play again</button>
+    </div>
+
+    <div id="banner" role="status">
+      <div class="title">Confirmed! 🎉</div>
+      <div class="subtitle">You caught the evasive button.</div>
+    </div>
+
+    <button id="confirmBtn" aria-label="Confirm">Confirm</button>
+  </div>
+
+  <script>
+    "use strict";
+    // UTF-8 ✓ — All logic is contained in this single script for portability.
+
+    // =============================
+    // Tunable parameters (easy to tweak)
+    // =============================
+    const CONFIG = {
+      baseMaxSpeed: 360,           // px/s at difficulty 1.0
+      maxSpeedCap: 900,            // absolute cap as difficulty scales
+      baseMaxAcceleration: 2400,   // px/s^2
+      wanderStrength: 180,         // base wander accel magnitude (will reduce as difficulty rises)
+      predictionMsBase: 260,       // initial prediction horizon (ms)
+      predictionMsMax: 420,        // cap for prediction horizon (ms)
+      edgeRepelRadius: 170,        // start repelling from edges within this distance (px)
+      cornerRepelRadius: 200,      // strong corner repel distance (px)
+      wallRepelGain: 1.0,          // scales wall repel
+      cornerRepelGain: 1.4,        // scales corner repel
+      separationGain: 0.35,        // scales path separation
+      wanderGain: 0.22,            // scales wander relative to other forces
+      evadeGain: 1.0,              // primary steer away from predicted cursor
+      minSpeedThreshold: 36,       // px/s — considered idle if below
+      idleTimeThresholdMs: 360,    // if idle longer than this, burst escape
+      escapeBurstAccel: 3800,      // burst accel magnitude
+      escapeBurstDurationMs: 140,  // how long the burst lasts
+      nearMissRadius: 130,         // distance considered a near miss (for dodge scoring)
+      separationHistoryMs: 2200,   // how long we remember path positions (ms)
+      separationSampleEveryMs: 40, // sampling period for path history
+      cursorWindowSize: 8,         // sliding window size for cursor samples
+      clampInside: true            // keep button fully inside the viewport
+    };
+
+    // Weights are blended and the final acceleration is capped for smoothness.
+
+    // =============================
+    // DOM elements & canvas setup
+    // =============================
+    const gameEl = document.getElementById("game");
+    const buttonEl = document.getElementById("confirmBtn");
+    const debugCanvas = document.getElementById("debugCanvas");
+    const debugToggle = document.getElementById("debugToggle");
+    const playAgainBtn = document.getElementById("playAgain");
+    const timeValEl = document.getElementById("timeVal");
+    const diffValEl = document.getElementById("diffVal");
+    const dodgeValEl = document.getElementById("dodgeVal");
+    const bannerEl = document.getElementById("banner");
+
+    /** Canvas 2D context for debug overlay. */
+    const ctx = debugCanvas.getContext("2d");
+
+    // =============================
+    // Utility vector helpers (no external libs)
+    // =============================
+    function vec(x = 0, y = 0) { return { x, y }; }
+    function add(a, b) { return { x: a.x + b.x, y: a.y + b.y }; }
+    function sub(a, b) { return { x: a.x - b.x, y: a.y - b.y }; }
+    function mul(a, s) { return { x: a.x * s, y: a.y * s }; }
+    function dot(a, b) { return a.x * b.x + a.y * b.y; }
+    function len(a) { return Math.hypot(a.x, a.y); }
+    function norm(a) { const L = len(a) || 1; return { x: a.x / L, y: a.y / L }; }
+    function clamp(v, minV, maxV) { return Math.max(minV, Math.min(maxV, v)); }
+    function clampVec(v, maxLen) { const L = len(v); return L > maxLen ? mul(v, maxLen / (L || 1)) : v; }
+    function isFiniteVec(v) { return Number.isFinite(v.x) && Number.isFinite(v.y); }
+
+    // Smooth pseudo-random wander helper: keep angle and drift it over time
+    const wanderState = { angle: Math.random() * Math.PI * 2, driftSpeed: 1.7 };
+
+    // =============================
+    // Pointer tracking & prediction
+    // =============================
+    const pointerState = {
+      samples: [], // {x,y,t}
+      pos: vec(window.innerWidth * 0.5, window.innerHeight * 0.5),
+      active: false
+    };
+
+    function recordPointer(x, y, t) {
+      // NaN guard
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      pointerState.active = true;
+      pointerState.pos = vec(x, y);
+      pointerState.samples.push({ x, y, t });
+      // Keep sliding window of last N samples
+      if (pointerState.samples.length > CONFIG.cursorWindowSize) {
+        pointerState.samples.shift();
+      }
+    }
+
+    function onMouseMove(e) { recordPointer(e.clientX, e.clientY, performance.now()); }
+    function onTouchMove(e) {
+      if (e.touches && e.touches.length > 0) {
+        const t = e.touches[0];
+        recordPointer(t.clientX, t.clientY, performance.now());
+      }
+    }
+
+    document.addEventListener("mousemove", onMouseMove, { passive: true });
+    document.addEventListener("touchmove", onTouchMove, { passive: true });
+
+    // Predict future cursor position using linear extrapolation over the last samples
+    function predictCursor(msAhead) {
+      const s = pointerState.samples;
+      const now = performance.now();
+      if (s.length < 2) {
+        // No velocity info; fallback to last known or center
+        const fallback = pointerState.pos || vec(window.innerWidth * 0.5, window.innerHeight * 0.5);
+        return fallback;
+      }
+      const first = s[0];
+      const last = s[s.length - 1];
+      const dtMs = Math.max(1, last.t - first.t);
+      const vx = (last.x - first.x) / dtMs; // px/ms
+      const vy = (last.y - first.y) / dtMs; // px/ms
+      const dtAhead = clamp(msAhead, 0, CONFIG.predictionMsMax);
+      const pred = vec(last.x + vx * dtAhead, last.y + vy * dtAhead);
+      // If user stopped giving input recently, decay prediction toward current
+      const idleMs = now - last.t;
+      if (idleMs > 150) {
+        const k = clamp((idleMs - 150) / 400, 0, 1); // slowly reduce overshoot
+        return add(mul(pred, 1 - k), mul(last, k));
+      }
+      return pred;
+    }
+
+    // =============================
+    // Button physics state
+    // =============================
+    const state = {
+      pos: vec(window.innerWidth * 0.5, window.innerHeight * 0.5),
+      vel: vec((Math.random() - 0.5) * 120, (Math.random() - 0.5) * 120),
+      acc: vec(0, 0),
+      halfW: 0,
+      halfH: 0,
+      lastTime: performance.now(),
+      startTime: performance.now(),
+      elapsedSec: 0,
+      nearMissActive: false,
+      dodgeCount: 0,
+      gameOver: false,
+      idleUnderThresholdSince: null,
+      escapeBurstUntil: 0,
+      difficulty: 1.0,
+      pathHistory: [] // {x,y,t}
+    };
+
+    function updateButtonSize() {
+      if (!buttonEl) return;
+      const r = buttonEl.getBoundingClientRect();
+      state.halfW = r.width * 0.5;
+      state.halfH = r.height * 0.5;
+    }
+
+    function resizeCanvas() {
+      debugCanvas.width = gameEl.clientWidth;
+      debugCanvas.height = gameEl.clientHeight;
+    }
+
+    // Initial sizing
+    updateButtonSize();
+    resizeCanvas();
+    window.addEventListener("resize", () => {
+      resizeCanvas();
+      // Ensure position stays inside
+      constrainPositionInside();
+    });
+
+    function constrainPositionInside() {
+      if (!CONFIG.clampInside) return;
+      const width = gameEl.clientWidth, height = gameEl.clientHeight;
+      state.pos.x = clamp(state.pos.x, state.halfW, width - state.halfW);
+      state.pos.y = clamp(state.pos.y, state.halfH, height - state.halfH);
+    }
+
+    function placeButton() {
+      // Apply center-based positioning using translate(-50%,-50%)
+      buttonEl.style.left = state.pos.x + "px";
+      buttonEl.style.top  = state.pos.y + "px";
+    }
+
+    // =============================
+    // Steering behaviors
+    // =============================
+
+    // Evade force: move away from predicted cursor point
+    function steerEvade(predictedCursor, desiredMaxSpeed) {
+      const away = sub(state.pos, predictedCursor);
+      if (!isFiniteVec(away) || (away.x === 0 && away.y === 0)) return vec(0, 0);
+      const desiredVel = mul(norm(away), desiredMaxSpeed);
+      const steering = sub(desiredVel, state.vel); // velocity change desired
+      return steering; // will be capped later to max acceleration
+    }
+
+    // Soft wall avoidance: repulsive push from edges to keep inside and slide along walls
+    function steerAvoidWalls() {
+      const width = gameEl.clientWidth, height = gameEl.clientHeight;
+      const minX = state.halfW, maxX = width - state.halfW;
+      const minY = state.halfH, maxY = height - state.halfH;
+      const r = CONFIG.edgeRepelRadius;
+      let f = vec(0, 0);
+
+      const leftDist = (state.pos.x - minX);
+      const rightDist = (maxX - state.pos.x);
+      const topDist = (state.pos.y - minY);
+      const bottomDist = (maxY - state.pos.y);
+
+      // Repel function: stronger when deeper within the repel radius
+      function repelComponent(dist, axisSign) {
+        if (dist < r) {
+          const k = (1 - dist / r); // 0..1
+          return k * k * axisSign; // quadratic falloff
+        }
+        return 0;
+      }
+
+      f.x += repelComponent(leftDist, +1);
+      f.x += repelComponent(rightDist, -1);
+      f.y += repelComponent(topDist, +1);
+      f.y += repelComponent(bottomDist, -1);
+
+      // Scale to acceleration space
+      const mag = len(f);
+      if (mag > 0) {
+        f = mul(norm(f), CONFIG.baseMaxAcceleration * CONFIG.wallRepelGain);
+      }
+
+      // Add slight tangential drift so it "slides" along walls instead of stopping
+      const nearVertical = (leftDist < r) || (rightDist < r);
+      const nearHorizontal = (topDist < r) || (bottomDist < r);
+      if (nearVertical || nearHorizontal) {
+        const tangent = nearVertical ? vec(0, state.vel.y >= 0 ? 1 : -1) : vec(state.vel.x >= 0 ? 1 : -1, 0);
+        f = add(f, mul(tangent, CONFIG.baseMaxAcceleration * 0.18));
+      }
+
+      return f;
+    }
+
+    // Strong corner avoidance: pushes diagonally away from corners
+    function steerAvoidCorners() {
+      const width = gameEl.clientWidth, height = gameEl.clientHeight;
+      const minX = state.halfW, maxX = width - state.halfW;
+      const minY = state.halfH, maxY = height - state.halfH;
+      const corners = [
+        vec(minX, minY), vec(maxX, minY), vec(minX, maxY), vec(maxX, maxY)
+      ];
+      let sum = vec(0, 0);
+      for (const c of corners) {
+        const d = sub(state.pos, c);
+        const L = len(d);
+        if (L < CONFIG.cornerRepelRadius) {
+          // Inverse-square style repulsion with cap
+          const push = mul(norm(d), CONFIG.baseMaxAcceleration * CONFIG.cornerRepelGain * clamp((CONFIG.cornerRepelRadius - L) / CONFIG.cornerRepelRadius, 0, 1));
+          sum = add(sum, push);
+        }
+      }
+      return sum;
+    }
+
+    // Wander: smoothed jitter to avoid linear paths, implemented as drifting angle
+    function steerWander() {
+      const t = performance.now() * 0.001; // seconds
+      // Slowly drift the wander angle with a bit of jitter
+      const jitter = 0.6; // radians/sec of random perturbation
+      wanderState.angle += (Math.random() - 0.5) * jitter * 0.016 + wanderState.driftSpeed * 0.005;
+      const circleDir = vec(Math.cos(wanderState.angle + t * 0.3), Math.sin(wanderState.angle - t * 0.27));
+      const accelMag = CONFIG.wanderStrength;
+      return mul(circleDir, accelMag);
+    }
+
+    // Separation: repulse from recent path positions to avoid repeating exact track
+    function steerSeparationFromPath() {
+      const now = performance.now();
+      // Keep history within time window
+      const cutoff = now - CONFIG.separationHistoryMs;
+      state.pathHistory = state.pathHistory.filter(p => p.t >= cutoff);
+
+      let steer = vec(0, 0);
+      let count = 0;
+      for (const p of state.pathHistory) {
+        const d = sub(state.pos, p);
+        const L2 = d.x * d.x + d.y * d.y + 1; // avoid div-by-zero
+        // Weight: inverse-square, but clamp max contribution
+        const w = Math.min(3000 / L2, 1.2);
+        steer = add(steer, mul(d, w));
+        count++;
+      }
+      if (count > 0) {
+        steer = mul(steer, 1 / count);
+        steer = mul(norm(steer), CONFIG.baseMaxAcceleration * CONFIG.separationGain);
+      }
+      return steer;
+    }
+
+    // =============================
+    // Difficulty scaling
+    // =============================
+    function computeDifficulty(elapsedSec, dodgeCount) {
+      // Time-based ramp with small bonus per dodge
+      const timeFactor = clamp(elapsedSec / 22, 0, 1.5); // up to +1.5
+      const dodgeFactor = clamp(dodgeCount * 0.08, 0, 1.2);
+      return 1 + timeFactor + dodgeFactor; // starts at 1.0, rises over time
+    }
+
+    function parametersForDifficulty(d) {
+      const maxSpeed = Math.min(CONFIG.baseMaxSpeed * d, CONFIG.maxSpeedCap);
+      const maxAccel = CONFIG.baseMaxAcceleration * (0.8 + 0.2 * Math.min(d, 2.0));
+      const predMs = clamp(CONFIG.predictionMsBase + (d - 1) * 120, 200, CONFIG.predictionMsMax);
+      const wander = CONFIG.wanderStrength * (1 - Math.min((d - 1) * 0.15, 0.35)); // slightly reduce wander as purpose increases
+      return { maxSpeed, maxAccel, predMs, wander };
+    }
+
+    // =============================
+    // Anti-stuck and escape burst
+    // =============================
+    function maybeApplyEscapeBurst(params) {
+      const now = performance.now();
+      const speed = len(state.vel);
+      const isIdle = speed < CONFIG.minSpeedThreshold;
+
+      if (isIdle) {
+        if (state.idleUnderThresholdSince == null) state.idleUnderThresholdSince = now;
+      } else {
+        state.idleUnderThresholdSince = null;
+      }
+
+      const idleMs = state.idleUnderThresholdSince != null ? (now - state.idleUnderThresholdSince) : 0;
+      const nearCorner = isNearCorner();
+
+      if (idleMs > CONFIG.idleTimeThresholdMs || (nearCorner && isIdle)) {
+        // Deterministic escape: target near center with slight random offset
+        const center = vec(gameEl.clientWidth * 0.5, gameEl.clientHeight * 0.5);
+        const offset = vec((Math.random() - 0.5) * 180, (Math.random() - 0.5) * 180);
+        const escapeTarget = add(center, offset);
+        let burst = sub(escapeTarget, state.pos);
+        if (!isFiniteVec(burst) || (burst.x === 0 && burst.y === 0)) {
+          burst = vec((Math.random() - 0.5) * 1, (Math.random() - 0.5) * 1);
+        }
+        burst = mul(norm(burst), CONFIG.escapeBurstAccel);
+
+        // Bias away from closest edge normal to promote sliding out of corners
+        const wallBias = steerAvoidWalls();
+        const cornerBias = steerAvoidCorners();
+        const comboBias = add(mul(wallBias, 0.4), mul(cornerBias, 0.4));
+        state.acc = add(state.acc, add(burst, comboBias));
+        state.escapeBurstUntil = now + CONFIG.escapeBurstDurationMs;
+        // Reset idle timer so we don't immediately retrigger
+        state.idleUnderThresholdSince = now + 99999; // effectively disable until moving
+      }
+    }
+
+    function isNearCorner() {
+      const width = gameEl.clientWidth, height = gameEl.clientHeight;
+      const minX = state.halfW, maxX = width - state.halfW;
+      const minY = state.halfH, maxY = height - state.halfH;
+      const corners = [ vec(minX, minY), vec(maxX, minY), vec(minX, maxY), vec(maxX, maxY) ];
+      for (const c of corners) {
+        if (len(sub(state.pos, c)) < CONFIG.cornerRepelRadius * 0.9) return true;
+      }
+      return false;
+    }
+
+    // =============================
+    // Game loop
+    // =============================
+    function step() {
+      if (state.gameOver) return; // paused on win
+
+      const now = performance.now();
+      let dt = (now - state.lastTime) / 1000; // seconds
+      // Clamp dt to avoid huge jumps when tab was inactive
+      dt = clamp(dt, 0, 0.035); // ~28 FPS worst-case step
+      state.lastTime = now;
+      state.elapsedSec = (now - state.startTime) / 1000;
+
+      // Update difficulty-scaled parameters each frame
+      state.difficulty = computeDifficulty(state.elapsedSec, state.dodgeCount);
+      const params = parametersForDifficulty(state.difficulty);
+      const desiredMaxSpeed = params.maxSpeed;
+      CONFIG.wanderStrength = params.wander; // live update
+
+      // Predict the cursor position ahead in time
+      const predictedCursor = predictCursor(params.predMs);
+
+      // Compute steering forces
+      const fEvade = mul(steerEvade(predictedCursor, desiredMaxSpeed), CONFIG.evadeGain);
+      const fWander = mul(steerWander(), CONFIG.wanderGain);
+      const fWalls = mul(steerAvoidWalls(), CONFIG.wallRepelGain);
+      const fCorners = mul(steerAvoidCorners(), CONFIG.cornerRepelGain);
+      const fSeparate = mul(steerSeparationFromPath(), CONFIG.separationGain);
+
+      // Sum forces (acceleration request) and cap to max acceleration
+      let acc = vec(0, 0);
+      acc = add(acc, fEvade);
+      acc = add(acc, fWander);
+      acc = add(acc, fWalls);
+      acc = add(acc, fCorners);
+      acc = add(acc, fSeparate);
+      acc = clampVec(acc, params.maxAccel);
+
+      // Apply anti-stuck burst if necessary (adds to acc)
+      state.acc = acc;
+      maybeApplyEscapeBurst(params);
+      acc = state.acc;
+
+      // Integrate physics
+      state.vel = add(state.vel, mul(acc, dt));
+      // Smoothly cap velocity
+      const speed = len(state.vel);
+      if (speed > desiredMaxSpeed) {
+        state.vel = mul(state.vel, desiredMaxSpeed / speed);
+      }
+
+      // Update position and constrain inside
+      state.pos = add(state.pos, mul(state.vel, dt));
+      constrainPositionInside();
+
+      // Record path history for separation
+      recordPathHistory(now);
+
+      // Place button in DOM
+      placeButton();
+
+      // Update UI
+      timeValEl.textContent = state.elapsedSec.toFixed(1) + "s";
+      diffValEl.textContent = (Math.round(state.difficulty * 10) / 10).toFixed(1);
+      dodgeValEl.textContent = String(state.dodgeCount);
+
+      // Check near-miss for dodge scoring
+      updateNearMiss(predictedCursor);
+
+      // Debug drawing if enabled
+      if (debugToggle.checked) {
+        drawDebug({ predictedCursor, fEvade, fWander, fWalls, fCorners, fSeparate });
+      }
+
+      // Schedule next frame
+      requestAnimationFrame(step);
+    }
+
+    function recordPathHistory(now) {
+      const last = state.pathHistory[state.pathHistory.length - 1];
+      if (!last || (now - last.t) >= CONFIG.separationSampleEveryMs) {
+        state.pathHistory.push({ x: state.pos.x, y: state.pos.y, t: now });
+      }
+      // Trim by time window handled in steerSeparationFromPath
+    }
+
+    function updateNearMiss(predictedCursor) {
+      const d = len(sub(state.pos, predictedCursor));
+      if (d < CONFIG.nearMissRadius) {
+        state.nearMissActive = true;
+      } else if (state.nearMissActive && d >= CONFIG.nearMissRadius * 1.2) {
+        state.nearMissActive = false;
+        state.dodgeCount += 1; // count a successful dodge after escaping a near-miss zone
+      }
+    }
+
+    // =============================
+    // Debug rendering
+    // =============================
+    function drawArrow(from, to, color, label) {
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.fillStyle = color;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(from.x, from.y);
+      ctx.lineTo(to.x, to.y);
+      ctx.stroke();
+      // arrowhead
+      const dir = sub(to, from);
+      const L = len(dir) || 1;
+      const n = mul(dir, 1 / L);
+      const left = { x: -n.y, y: n.x };
+      const head = 8;
+      ctx.beginPath();
+      ctx.moveTo(to.x, to.y);
+      ctx.lineTo(to.x - n.x * head + left.x * head * 0.6, to.y - n.y * head + left.y * head * 0.6);
+      ctx.lineTo(to.x - n.x * head - left.x * head * 0.6, to.y - n.y * head - left.y * head * 0.6);
+      ctx.closePath();
+      ctx.fill();
+      if (label) {
+        ctx.font = "11px ui-sans-serif, system-ui";
+        ctx.fillStyle = "#ccd7ff";
+        ctx.fillText(label, to.x + 6, to.y + 12);
+      }
+      ctx.restore();
+    }
+
+    function drawDebug(vectors) {
+      debugCanvas.classList.add("show");
+      ctx.clearRect(0, 0, debugCanvas.width, debugCanvas.height);
+
+      // Predicted cursor point
+      const p = vectors.predictedCursor;
+      ctx.save();
+      ctx.strokeStyle = "#ffa94d";
+      ctx.fillStyle = "rgba(255, 169, 77, 0.15)";
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+
+      // Button center
+      const c = state.pos;
+      ctx.save();
+      ctx.fillStyle = "#94d82d";
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, 3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+
+      // Steering vectors (scaled for visibility)
+      const scale = 0.04; // visualize large accelerations
+      drawArrow(c, add(c, mul(vectors.fEvade, scale)), "#4dabf7", "evade");
+      drawArrow(c, add(c, mul(vectors.fWander, scale)), "#20c997", "wander");
+      drawArrow(c, add(c, mul(vectors.fWalls, scale)), "#f06595", "walls");
+      drawArrow(c, add(c, mul(vectors.fCorners, scale)), "#fab005", "corners");
+      drawArrow(c, add(c, mul(vectors.fSeparate, scale)), "#ffd43b", "separate");
+
+      // Line to predicted cursor
+      drawArrow(c, p, "#ffa94d", "predict");
+    }
+
+    debugToggle.addEventListener("change", () => {
+      if (!debugToggle.checked) {
+        debugCanvas.classList.remove("show");
+        ctx.clearRect(0, 0, debugCanvas.width, debugCanvas.height);
+      }
+    });
+
+    // =============================
+    // Click detection & fairness
+    // =============================
+    function isPointerWithinButton(clientX, clientY) {
+      const r = buttonEl.getBoundingClientRect();
+      return clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom;
+    }
+
+    function onPointerDownForWin(clientX, clientY) {
+      if (state.gameOver) return;
+      if (isPointerWithinButton(clientX, clientY)) {
+        onWin();
+      }
+    }
+
+    document.addEventListener("mousedown", (e) => {
+      onPointerDownForWin(e.clientX, e.clientY);
+    });
+    document.addEventListener("touchstart", (e) => {
+      if (e.touches && e.touches.length > 0) {
+        const t = e.touches[0];
+        onPointerDownForWin(t.clientX, t.clientY);
+      }
+    }, { passive: true });
+
+    function onWin() {
+      state.gameOver = true;
+      bannerEl.classList.add("show");
+      playAgainBtn.style.display = "inline-flex";
+    }
+
+    function resetGame() {
+      state.pos = vec(gameEl.clientWidth * 0.5, gameEl.clientHeight * 0.5);
+      state.vel = vec((Math.random() - 0.5) * 120, (Math.random() - 0.5) * 120);
+      state.acc = vec(0, 0);
+      state.lastTime = performance.now();
+      state.startTime = performance.now();
+      state.elapsedSec = 0;
+      state.nearMissActive = false;
+      state.dodgeCount = 0;
+      state.gameOver = false;
+      state.idleUnderThresholdSince = null;
+      state.escapeBurstUntil = 0;
+      state.difficulty = 1.0;
+      state.pathHistory = [];
+      bannerEl.classList.remove("show");
+      playAgainBtn.style.display = "none";
+      placeButton();
+      requestAnimationFrame(step);
+    }
+
+    playAgainBtn.addEventListener("click", resetGame);
+
+    // Keyboard affordance
+    window.addEventListener("keydown", (e) => {
+      if (e.key.toLowerCase() === "r") resetGame();
+      if (e.key.toLowerCase() === "d") debugToggle.checked = !debugToggle.checked, debugToggle.dispatchEvent(new Event("change"));
+    });
+
+    // =============================
+    // Start the loop
+    // =============================
+    placeButton();
+    requestAnimationFrame(step);
+  </script>
+</body>
+</html>
