@@ -152,6 +152,7 @@
       <div><span class="k">Score</span><span id="score" class="v">0</span></div>
       <div><span class="k">Time</span><span id="time" class="v">0.0s</span></div>
       <div><span class="k">Level</span><span id="level" class="v">1</span></div>
+      <div><span class="k">Stage</span><span id="stage" class="v">Easy</span></div>
       <label class="toggle" title="Show predictive point and steering vectors">
         <input id="debugToggle" type="checkbox" />
         <span>Debug</span>
@@ -208,11 +209,12 @@
   const scoreEl = document.getElementById('score');
   const timeEl = document.getElementById('time');
   const levelEl = document.getElementById('level');
+  const stageEl = document.getElementById('stage');
   const debugToggle = document.getElementById('debugToggle');
   const debugCanvas = document.getElementById('debugCanvas');
   const toastEl = document.getElementById('toast');
 
-  if (!arena || !btn || !scoreEl || !timeEl || !levelEl || !debugToggle || !debugCanvas || !toastEl) {
+  if (!arena || !btn || !scoreEl || !timeEl || !levelEl || !stageEl || !debugToggle || !debugCanvas || !toastEl) {
     throw new Error('Required DOM elements missing.');
   }
 
@@ -265,6 +267,15 @@
     debugScale: 0.04,         // shorten vectors visually
   };
 
+  // Explicit stage profiles that map levels to named difficulties.
+  // Stages gently scale speed, prediction horizon, wander amount, and wall repulsion.
+  const STAGES = [
+    { name: 'Easy',   minLevel: 1,  speedMult: 0.90, predictionAddMs:   0, wanderMult: 1.00, repelMult: 0.95 },
+    { name: 'Normal', minLevel: 4,  speedMult: 1.00, predictionAddMs:  40, wanderMult: 0.90, repelMult: 1.00 },
+    { name: 'Hard',   minLevel: 8,  speedMult: 1.15, predictionAddMs:  90, wanderMult: 0.80, repelMult: 1.10 },
+    { name: 'Insane', minLevel: 13, speedMult: 1.30, predictionAddMs: 140, wanderMult: 0.70, repelMult: 1.20 },
+  ];
+
   // ---------- Game state ----------
   let world = {
     w: arena.clientWidth,
@@ -302,19 +313,22 @@
 
   // Derived per-level parameters
   function getMaxSpeed() {
-    return TUNING.maxSpeedBase + (level - 1) * TUNING.maxSpeedPerLevel;
+    const s = getStage();
+    return (TUNING.maxSpeedBase + (level - 1) * TUNING.maxSpeedPerLevel) * s.speedMult;
   }
   function getPredictionMs() {
+    const s = getStage();
     return clamp(
-      TUNING.predictionMsBase + (level - 1) * TUNING.predictionMsPerLevel,
+      TUNING.predictionMsBase + s.predictionAddMs + (level - 1) * TUNING.predictionMsPerLevel,
       TUNING.predictionMsBase,
       TUNING.predictionMsMax
     );
   }
   function getWanderStrength() {
+    const s = getStage();
     return Math.max(
       TUNING.wanderStrengthMin,
-      TUNING.wanderStrengthBase - (level - 1) * TUNING.wanderDecayPerLevel
+      (TUNING.wanderStrengthBase - (level - 1) * TUNING.wanderDecayPerLevel) * s.wanderMult
     );
   }
 
@@ -459,10 +473,11 @@
     const dT = pos.y;              // distance to top
     const dB = world.h - pos.y;    // distance to bottom
 
+    const repelMult = getStage().repelMult;
     function repel(dist, sign) {
       if (dist < r) {
         const s = (1 - dist / r);
-        return sign * (TUNING.edgeRepelStrength * s * s); // quadratic falloff
+        return sign * (TUNING.edgeRepelStrength * repelMult * s * s); // quadratic falloff
       }
       return 0;
     }
@@ -477,7 +492,7 @@
       if (d < cr && d > 0.0001) {
         const s = (1 - d / cr);
         const dir = mul(to, 1 / d);
-        return mul(dir, TUNING.cornerRepelStrength * s * s);
+        return mul(dir, TUNING.cornerRepelStrength * repelMult * s * s);
       } else return vec(0,0);
     }
     const cForces = [
@@ -544,11 +559,26 @@
 
   // ---------- Difficulty progression ----------
   let lastLevelUpTs = startTs;
+  let lastStageName = 'Easy';
+  function getStage() {
+    // Find the highest stage whose minLevel <= current level
+    let current = STAGES[0];
+    for (const s of STAGES) {
+      if (level >= s.minLevel) current = s;
+    }
+    return current;
+  }
   function maybeLevelUp(now) {
     if (now - lastLevelUpTs > TUNING.levelUpIntervalMs) {
       level++;
       lastLevelUpTs = now;
-      showToast('Level up → ' + level);
+      const stage = getStage();
+      if (stage.name !== lastStageName) {
+        showToast('Stage: ' + stage.name + ' · Lv ' + level);
+        lastStageName = stage.name;
+      } else {
+        showToast('Level up → ' + level);
+      }
     }
   }
 
@@ -642,6 +672,8 @@
     if (Number.isFinite(elapsed)) timeEl.textContent = elapsed.toFixed(1) + 's';
     scoreEl.textContent = String(score);
     levelEl.textContent = String(level);
+    const stage = getStage();
+    stageEl.textContent = stage.name;
 
     // Debug overlay
     if (debugToggle.checked) drawDebug(predicted, F_evade, F_wander, F_avoid, F_separate, acc);
