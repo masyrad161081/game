@@ -151,8 +151,8 @@
     <div class="hud" aria-live="polite" aria-atomic="true">
       <div><span class="k">Score</span><span id="score" class="v">0</span></div>
       <div><span class="k">Time</span><span id="time" class="v">0.0s</span></div>
-      <div><span class="k">Level</span><span id="level" class="v">1</span></div>
-      <div><span class="k">Stage</span><span id="stage" class="v">Easy</span></div>
+      <div><span class="k">Stage</span><span id="level" class="v">1</span></div>
+      <div><span class="k">Mode</span><span id="stage" class="v">Easy</span></div>
       <label class="toggle" title="Show predictive point and steering vectors">
         <input id="debugToggle" type="checkbox" />
         <span>Debug</span>
@@ -395,18 +395,17 @@
   }
 
   function onSuccessClick() {
-    // Player caught the button — reset state and report
-    score = 0; level = 1; startTs = performance.now();
-    showToast('Caught! Resetting…');
-    // Move button toward center with tiny random offset so it does not teleport; do a gentle reposition (continuous)
+    // Player caught the button — advance to next stage (easier→harder)
+    score++; level++;
+    showToast('مرحله ' + level + ' شروع شد');
+    // Move button toward center with tiny random offset; no teleporting
     const centerTarget = vec(world.w * 0.5 + (Math.random()-0.5)*40, world.h * 0.5 + (Math.random()-0.5)*40);
-    // Set velocity toward center quickly but smoothly
+    // Set velocity toward center quickly but smoothly so next stage begins in motion
     const toCenter = sub(centerTarget, pos);
     const dir = normalize(toCenter);
     vel = mul(dir, Math.min(getMaxSpeed()*0.6, length(toCenter)));
     // Clear histories so separation does not push from stale path
     pathHistory.length = 0;
-    nearMissCooldownUntil = performance.now() + TUNING.nearMissCooldownMs;
   }
 
   function showToast(text) {
@@ -568,19 +567,8 @@
     }
     return current;
   }
-  function maybeLevelUp(now) {
-    if (now - lastLevelUpTs > TUNING.levelUpIntervalMs) {
-      level++;
-      lastLevelUpTs = now;
-      const stage = getStage();
-      if (stage.name !== lastStageName) {
-        showToast('Stage: ' + stage.name + ' · Lv ' + level);
-        lastStageName = stage.name;
-      } else {
-        showToast('Level up → ' + level);
-      }
-    }
-  }
+  // Passive leveling removed: stage advances only when you click the button
+  function maybeLevelUp(now) { /* intentional no-op */ }
 
   function maybeRegisterNearMiss(now) {
     if (now < nearMissCooldownUntil) return;
@@ -590,10 +578,9 @@
       if (!nearMissStartTs) nearMissStartTs = now;
       if (now - nearMissStartTs >= TUNING.nearMissHoldMs) {
         score++;
-        level++;
         nearMissCooldownUntil = now + TUNING.nearMissCooldownMs;
         nearMissStartTs = 0;
-        showToast('Dodged! Score ' + score + ' · Lv ' + level);
+        showToast('Dodged! Score ' + score);
       }
     } else {
       nearMissStartTs = 0;
@@ -673,7 +660,7 @@
     scoreEl.textContent = String(score);
     levelEl.textContent = String(level);
     const stage = getStage();
-    stageEl.textContent = stage.name;
+    stageEl.textContent = stage.name + ' (' + level + ')';
 
     // Debug overlay
     if (debugToggle.checked) drawDebug(predicted, F_evade, F_wander, F_avoid, F_separate, acc);
