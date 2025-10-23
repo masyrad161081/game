@@ -151,8 +151,7 @@
     <div class="hud" aria-live="polite" aria-atomic="true">
       <div><span class="k">Score</span><span id="score" class="v">0</span></div>
       <div><span class="k">Time</span><span id="time" class="v">0.0s</span></div>
-      <div><span class="k">Stage</span><span id="level" class="v">1</span></div>
-      <div><span class="k">Mode</span><span id="stage" class="v">Easy</span></div>
+      <div><span class="k">Mode</span><span id="stage" class="v">Insane</span></div>
       <label class="toggle" title="Show predictive point and steering vectors">
         <input id="debugToggle" type="checkbox" />
         <span>Debug</span>
@@ -208,13 +207,12 @@
   const btn = document.getElementById('confirmBtn');
   const scoreEl = document.getElementById('score');
   const timeEl = document.getElementById('time');
-  const levelEl = document.getElementById('level');
   const stageEl = document.getElementById('stage');
   const debugToggle = document.getElementById('debugToggle');
   const debugCanvas = document.getElementById('debugCanvas');
   const toastEl = document.getElementById('toast');
 
-  if (!arena || !btn || !scoreEl || !timeEl || !levelEl || !stageEl || !debugToggle || !debugCanvas || !toastEl) {
+  if (!arena || !btn || !scoreEl || !timeEl || !stageEl || !debugToggle || !debugCanvas || !toastEl) {
     throw new Error('Required DOM elements missing.');
   }
 
@@ -267,13 +265,9 @@
     debugScale: 0.04,         // shorten vectors visually
   };
 
-  // Explicit stage profiles that map levels to named difficulties.
-  // Stages gently scale speed, prediction horizon, wander amount, and wall repulsion.
+  // Fixed mode: Insane difficulty profile (single-stage gameplay)
   const STAGES = [
-    { name: 'Easy',   minLevel: 1,  speedMult: 0.90, predictionAddMs:   0, wanderMult: 1.00, repelMult: 0.95 },
-    { name: 'Normal', minLevel: 4,  speedMult: 1.00, predictionAddMs:  40, wanderMult: 0.90, repelMult: 1.00 },
-    { name: 'Hard',   minLevel: 8,  speedMult: 1.15, predictionAddMs:  90, wanderMult: 0.80, repelMult: 1.10 },
-    { name: 'Insane', minLevel: 13, speedMult: 1.30, predictionAddMs: 140, wanderMult: 0.70, repelMult: 1.20 },
+    { name: 'Insane', minLevel: 1, speedMult: 1.30, predictionAddMs: 140, wanderMult: 0.70, repelMult: 1.20 },
   ];
 
   // ---------- Game state ----------
@@ -293,7 +287,7 @@
   let lastTs = performance.now();
   let startTs = lastTs;
 
-  let level = 1;
+  let level = 1; // retained for internal scaling but UI hides it
   let score = 0;
 
   let idleSinceTs = null;     // timestamp when we started being slow
@@ -395,16 +389,14 @@
   }
 
   function onSuccessClick() {
-    // Player caught the button — advance to next stage (easier→harder)
-    score++; level++;
-    showToast('مرحله ' + level + ' شروع شد');
-    // Move button toward center with tiny random offset; no teleporting
+    // Player caught the button — award score and keep single-stage running
+    score++;
+    showToast('Caught! Score ' + score);
+    // Small centerward glide to keep motion continuous, no teleport
     const centerTarget = vec(world.w * 0.5 + (Math.random()-0.5)*40, world.h * 0.5 + (Math.random()-0.5)*40);
-    // Set velocity toward center quickly but smoothly so next stage begins in motion
     const toCenter = sub(centerTarget, pos);
     const dir = normalize(toCenter);
     vel = mul(dir, Math.min(getMaxSpeed()*0.6, length(toCenter)));
-    // Clear histories so separation does not push from stale path
     pathHistory.length = 0;
   }
 
@@ -558,7 +550,7 @@
 
   // ---------- Difficulty progression ----------
   let lastLevelUpTs = startTs;
-  let lastStageName = 'Easy';
+  let lastStageName = 'Insane';
   function getStage() {
     // Find the highest stage whose minLevel <= current level
     let current = STAGES[0];
@@ -567,8 +559,8 @@
     }
     return current;
   }
-  // Passive leveling removed: stage advances only when you click the button
-  function maybeLevelUp(now) { /* intentional no-op */ }
+  // Single-stage mode: no automatic or click-based level progression
+  function maybeLevelUp(now) { /* no-op */ }
 
   function maybeRegisterNearMiss(now) {
     if (now < nearMissCooldownUntil) return;
@@ -658,9 +650,8 @@
     const elapsed = (now - startTs) / 1000;
     if (Number.isFinite(elapsed)) timeEl.textContent = elapsed.toFixed(1) + 's';
     scoreEl.textContent = String(score);
-    levelEl.textContent = String(level);
     const stage = getStage();
-    stageEl.textContent = stage.name + ' (' + level + ')';
+    stageEl.textContent = stage.name;
 
     // Debug overlay
     if (debugToggle.checked) drawDebug(predicted, F_evade, F_wander, F_avoid, F_separate, acc);
